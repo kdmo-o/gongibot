@@ -14,11 +14,11 @@ TARGET_CHATS = [c.strip() for c in RAW_CHATS.split(",") if c.strip()]
 CAFE_ID = 21160703
 
 BOARDS = {
-    "종합":      {"menu_id": 2510, "header": "🔴 종합"},
     "중앙공기업": {"menu_id": 861,  "header": "🏢 중앙"},
     "지방공기업": {"menu_id": 2486, "header": "🏛 지방"},
     "인턴계약직": {"menu_id": 2488, "header": "📄 인턴"},
     "학교병원":  {"menu_id": 2487, "header": "🏥 학병"},
+    "종합":      {"menu_id": 2510, "header": "🔴 종합"},
 }
 
 # ── 네이버 블로그 설정 ────────────────────
