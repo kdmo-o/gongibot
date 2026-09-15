@@ -1,0 +1,32 @@
+name: Validate deadline summaries
+on:
+  pull_request:
+    paths-ignore:
+      - seen_posts.json
+      - deadline_state.json
+      - boards_config.json
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install -r requirements-dev.txt
+          python -m playwright install --with-deps chromium
+      - name: Unit and regression tests
+        run: python -m pytest -q
+      - name: Read example article without Telegram credentials
+        run: python -m pytest -q tests/live_preview.py
+      - name: Preview example without sending or changing state
+        run: |
+          python gongibot.py --preview-article-id 3178545
+          git diff --exit-code -- seen_posts.json deadline_state.json
+

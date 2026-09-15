@@ -1,4 +1,10 @@
 import os
+import argparse
+from html import escape
+
+from deadline_schedule import fetch_article, parse_schedule, render_messages, ScheduleError
+from deadline_delivery import DeadlineQueue, save_json
+from telegram_delivery import send_message, DeliveryError
 import json
 import re
 import requests
@@ -6,7 +12,7 @@ import time
 from urllib.parse import unquote_plus
 
 # ── 설정 로드 ──────────────────────────────
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 RAW_CHATS = os.environ.get("TELEGRAM_CHAT", "")
 TARGET_CHATS = [c.strip() for c in RAW_CHATS.split(",") if c.strip()]
 
@@ -71,46 +77,40 @@ ALL_SOURCE_KEYS = list(BOARDS.keys()) + [b["name"] for b in BLOG_TARGETS]
 # ── seen 관리 ────────────────────
 
 def load_seen() -> dict:
-    if os.path.exists(SEEN_FILE):
-        try:
-            with open(SEEN_FILE, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-                if not content:
-                    return {k: [] for k in ALL_SOURCE_KEYS}
-                data = json.loads(content)
-                if isinstance(data, list):
-                    new_data = {k: [] for k in ALL_SOURCE_KEYS}
-                    new_data["종합"] = data
-                    return new_data
-                for k in ALL_SOURCE_KEYS:
-                    data.setdefault(k, [])
-                return data
-        except Exception as e:
-            print(f"[경고] seen_posts 읽기 실패: {e}")
-    return {k: [] for k in ALL_SOURCE_KEYS}
+    if not os.path.exists(SEEN_FILE):
+        return {k: [] for k in ALL_SOURCE_KEYS}
+    with open(SEEN_FILE, "r", encoding="utf-8") as f:
+        content = f.read().strip()
+    if not content:
+        raise ValueError("seen_posts 파일이 비어 있습니다. 발송 이력을 복구해야 합니다")
+    data = json.loads(content)
+    if isinstance(data, list):
+        data = {"종합": data}
+    if not isinstance(data, dict) or any(
+        not isinstance(value, list) or any(not isinstance(aid, str) for aid in value)
+        for value in data.values()
+    ):
+        raise ValueError("seen_posts 파일 형식 오류")
+    for key in ALL_SOURCE_KEYS:
+        data.setdefault(key, [])
+    return data
+
 
 def save_seen(seen: dict):
-    with open(SEEN_FILE, "w", encoding="utf-8") as f:
-        json.dump(seen, f, ensure_ascii=False, indent=2)
+    save_json(SEEN_FILE, seen)
 
 
 # ── 텔레그램 (다중 전송) ──────────────────────
 
-def send_telegram(text: str):
-    for chat_id in TARGET_CHATS:
+def send_telegram(text: str) -> bool:
+    success = True
+    for chat_id in dict.fromkeys(TARGET_CHATS):
         try:
-            requests.post(
-                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-                json={
-                    "chat_id":                  chat_id,
-                    "text":                     text,
-                    "parse_mode":               "HTML",
-                    "disable_web_page_preview": True,
-                },
-                timeout=15,
-            ).raise_for_status()
-        except Exception as e:
-            print(f"[오류] 텔레그램 전송 실패 (대상: {chat_id}): {e}")
+            send_message(TELEGRAM_TOKEN, chat_id, text)
+        except DeliveryError as exc:
+            print(f"[오류] {exc}")
+            success = False
+    return success and bool(TARGET_CHATS)
 
 
 # ── 네이버 카페 크롤링 ────────────────────
@@ -175,13 +175,17 @@ def fetch_blog_posts(blog_id: str, category_no: int) -> list:
 
 def monitor_boards():
     seen         = load_seen()
-    is_first_run = all(len(v) == 0 for v in seen.values())
+    queue        = DeadlineQueue()
+    queue.remove_completed(set(seen["마감"]))
+    is_first_run = all(len(v) == 0 for v in seen.values()) and not queue.data["articles"]
+    had_errors   = False
     total_new    = 0
     total_skip   = 0
 
     # 카페 확인
     for board_name, board_info in BOARDS.items():
         articles = fetch_cafe_articles(board_info["menu_id"])
+        articles = list({str(a["articleId"]): a for a in articles}.values())
         if is_first_run:
             seen[board_name] = [str(a["articleId"]) for a in articles]
             continue
@@ -190,22 +194,53 @@ def monitor_boards():
         new_articles = [a for a in articles if str(a["articleId"]) not in seen_ids]
         new_articles.reverse()
 
+        if board_info["menu_id"] == 2696:
+            for article in new_articles:
+                queue.register(str(article["articleId"]))
+            for aid in sorted(queue.data["articles"], key=int):
+                item = queue.data["articles"][aid]
+                if item["messages"] is None:
+                    try:
+                        article = fetch_article(aid)
+                        jobs = parse_schedule(article.html, article.published, article.url)
+                        messages = render_messages(jobs, article.url)
+                    except Exception as exc:
+                        # Third-party exceptions can contain page/connection details.
+                        detail = str(exc) if isinstance(exc, ScheduleError) else type(exc).__name__
+                        print(f"[오류] 마감 게시글 {aid} 본문 처리 실패: {detail}")
+                        had_errors = True
+                        continue
+                    queue.freeze(aid, messages)
+                if queue.deliver(
+                    aid, TARGET_CHATS,
+                    lambda chat, text: send_message(TELEGRAM_TOKEN, chat, text),
+                ):
+                    seen[board_name].append(aid)
+                    save_seen(seen)
+                    total_new += len(item["messages"])
+                else:
+                    had_errors = True
+            queue.remove_completed(set(seen[board_name]))
+            continue
+
         for a in new_articles:
             aid   = str(a["articleId"])
             title = a.get("subject", "(제목 없음)")
 
-            # seen에 먼저 등록 (필터 결과와 무관하게 재처리 방지)
-            seen[board_name].append(aid)
-
             if not should_send(title):
+                seen[board_name].append(aid)
                 print(f"[필터] 차단: [{board_name}] {title}")
                 total_skip += 1
                 continue
 
             url  = f"https://cafe.naver.com/ca-fe/cafes/{CAFE_ID}/articles/{aid}"
-            text = f"{board_info['header']}\n★ {title}\n<a href=\"{url}\">바로가기</a>"
-            send_telegram(text)
-            total_new += 1
+            text = f"{board_info['header']}\n★ {escape(title)}\n<a href=\"{url}\">바로가기</a>"
+            if send_telegram(text):
+                seen[board_name].append(aid)
+                save_seen(seen)
+                total_new += 1
+            else:
+                had_errors = True
             time.sleep(3)
 
     # 블로그 확인
@@ -222,16 +257,19 @@ def monitor_boards():
         new_posts.reverse()
 
         for p in new_posts:
-            seen[name].append(p["post_id"])
-
             if not should_send(p["title"]):
+                seen[name].append(p["post_id"])
                 print(f"[필터] 차단: [{name}] {p['title']}")
                 total_skip += 1
                 continue
 
-            text = f"{target['header']}\n★ {p['title']}\n<a href=\"{p['link']}\">바로가기</a>"
-            send_telegram(text)
-            total_new += 1
+            text = f"{target['header']}\n★ {escape(p['title'])}\n<a href=\"{escape(p['link'], quote=True)}\">바로가기</a>"
+            if send_telegram(text):
+                seen[name].append(p["post_id"])
+                save_seen(seen)
+                total_new += 1
+            else:
+                had_errors = True
             time.sleep(3)
 
     save_seen(seen)
@@ -239,10 +277,31 @@ def monitor_boards():
         print("✅ 초기 데이터 등록 완료.")
     else:
         print(f"✅ 모니터링 완료 — 전송 {total_new}개 / 차단 {total_skip}개")
+    return 1 if had_errors else 0
 
 
 def main():
-    monitor_boards()
+    parser = argparse.ArgumentParser(description="공기봇 채용 알림")
+    parser.add_argument("--preview-article-id", help="발송 및 이력 변경 없이 일정표를 출력합니다")
+    args = parser.parse_args()
+    if args.preview_article_id:
+        article = fetch_article(args.preview_article_id)
+        jobs = parse_schedule(article.html, article.published, article.url)
+        messages = render_messages(jobs, article.url)
+        for message in messages:
+            print(message["text"])
+            print()
+        print(f"미리보기: 채용 {len(jobs)}건 / 메시지 {len(messages)}개")
+        return 0
+    if not TELEGRAM_TOKEN or not TARGET_CHATS:
+        raise ValueError("TELEGRAM_TOKEN과 TELEGRAM_CHAT 설정이 필요합니다")
+    return monitor_boards()
+
 
 if __name__ == "__main__":
-    main()
+    try:
+        raise SystemExit(main())
+    except Exception as exc:
+        print(f"[오류] 실행을 완료하지 못했습니다 ({type(exc).__name__})")
+        raise SystemExit(1) from None
+
