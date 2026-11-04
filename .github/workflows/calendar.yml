@@ -1,0 +1,48 @@
+name: Calendar Openings
+on:
+  schedule:
+    - cron: "0 0 * * 1"  # UTC 월 00:00 → KST 월 09:00 예정 (실행 지연 가능)
+    - cron: "0 8 * * 5"  # UTC 금 08:00 → KST 금 17:00 예정 (실행 지연 가능)
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: gongibot-production
+  cancel-in-progress: false
+jobs:
+  run-calendar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: main
+          fetch-depth: 0
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+      - name: Send calendar openings
+        run: python gongibot.py --calendar
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT }}
+      - name: Commit calendar state
+        if: ${{ always() && !cancelled() }}
+        run: |
+          test -d .git || exit 1
+          test -f calendar_state.json || exit 0
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add calendar_state.json
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update calendar state"
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi

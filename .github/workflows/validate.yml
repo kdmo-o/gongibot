@@ -4,6 +4,7 @@ on:
     paths-ignore:
       - seen_posts.json
       - deadline_state.json
+      - calendar_state.json
       - boards_config.json
   workflow_dispatch:
 permissions:
@@ -28,5 +29,7 @@ jobs:
       - name: Preview example without sending or changing state
         run: |
           python gongibot.py --preview-article-id 3178545
+          python gongibot.py --preview-calendar-id 3207876
           git diff --exit-code -- seen_posts.json deadline_state.json
+          test ! -e calendar_state.json
 

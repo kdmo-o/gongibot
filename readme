@@ -12,3 +12,10 @@
 
 `python gongibot.py --preview-article-id 3178545`
 
+채용 달력 게시판(메뉴 2402)의 최신 두 달 글에서 서류 접수 시작 일정을 읽어,
+아직 마감 전인 공고를 시작일별로 묶어 보냅니다. 마감일은 같은 달력의 서류접수 마감 칸에서 가져오며,
+필기·면접 일정은 보내지 않습니다. 월요일 09:00, 금요일 17:00(KST)에 `python gongibot.py --calendar`로 실행되고,
+이미 보낸 항목은 `calendar_state.json`에 기록해 다시 보내지 않습니다.
+
+`python gongibot.py --preview-calendar-id 3207876`
+

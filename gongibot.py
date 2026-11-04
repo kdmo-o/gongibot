@@ -1,9 +1,11 @@
 import os
 import argparse
+from datetime import datetime, timedelta, timezone
 from html import escape
 
+import calendar_schedule
 from deadline_schedule import fetch_article, parse_schedule, render_messages, ScheduleError
-from deadline_delivery import DeadlineQueue, save_json
+from deadline_delivery import DeadlineQueue, recipient_key, save_json
 from telegram_delivery import send_message, DeliveryError
 import json
 import re
@@ -19,8 +21,11 @@ TARGET_CHATS = [c.strip() for c in RAW_CHATS.split(",") if c.strip()]
 # ── 네이버 카페 설정 ──────────────────────
 CAFE_ID = 21160703
 
+CALENDAR_MENU_ID = 2402
+CALENDAR_STATE_FILE = "calendar_state.json"
+KST = timezone(timedelta(hours=9))
+
 BOARDS = {
-    "달력":      {"menu_id": 2402, "header": "📅 달력"},
     "마감":      {"menu_id": 2696, "header": "⏳ 마감"},
     "종합":      {"menu_id": 2510, "header": "🔴 종합"},
 }
@@ -280,10 +285,104 @@ def monitor_boards():
     return 1 if had_errors else 0
 
 
+# ── 채용 달력: 서류 접수 시작 ────────────────
+
+def load_calendar_state() -> dict:
+    if not os.path.exists(CALENDAR_STATE_FILE):
+        return {"version": 1, "sent": {}, "deadlines": {}}
+    with open(CALENDAR_STATE_FILE, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if data.get("version") != 1 or not isinstance(data.get("sent"), dict) or any(
+        not isinstance(value, list) for value in data["sent"].values()
+    ):
+        raise ValueError("채용 달력 상태 파일 형식 오류")
+    data.setdefault("deadlines", {})
+    if not isinstance(data["deadlines"], dict):
+        raise ValueError("채용 달력 상태 파일 형식 오류")
+    return data
+
+
+def collect_openings(article_list: list) -> list:
+    calendars = []
+    for article in calendar_schedule.select_articles(article_list):
+        html = calendar_schedule.fetch_calendar_html(article.article_id)
+        calendars.append((article, calendar_schedule.parse_calendar(html, article)))
+    return calendar_schedule.build_openings(calendars)
+
+
+def monitor_calendar(today=None) -> int:
+    today = today or datetime.now(KST).date()
+    state = load_calendar_state()
+    sent = state["sent"]
+    articles = fetch_cafe_articles(CALENDAR_MENU_ID)
+    if not articles:
+        raise ScheduleError("채용 달력 게시판 목록을 불러오지 못했습니다")
+    openings = [item for item in collect_openings(articles)
+                if calendar_schedule.is_open(item, today)]
+    # Keys older than any possible open posting can no longer be re-sent.
+    cutoff = (today - timedelta(days=120)).isoformat()
+    deadlines = state["deadlines"]
+    for key in [key for key in sent if key.split("|", 1)[0] < cutoff]:
+        del sent[key]
+        deadlines.pop(key, None)
+
+    by_key = {item.key: item for item in openings}
+    had_errors = False
+    total = 0
+    for chat in dict.fromkeys(TARGET_CHATS):
+        recipient = recipient_key(chat)
+        notified = {key: deadlines.get(key, {}).get(recipient) for key, recipients in sent.items()
+                    if recipient in recipients}
+        changes = [(item, datetime.strptime(notified[item.key], "%Y-%m-%d").date()) for item in openings
+                   if notified.get(item.key) and item.deadline
+                   and item.deadline.isoformat() != notified[item.key]]
+        pending = [item for item in openings if item.key not in notified]
+        announced = {key.split("|", 1)[0] for key in notified}
+        messages = calendar_schedule.render_messages(pending, announced)
+        if changes:
+            messages.insert(0, calendar_schedule.render_deadline_changes(changes))
+        for message in messages:
+            try:
+                send_message(TELEGRAM_TOKEN, chat, message["text"])
+            except DeliveryError as exc:
+                print(f"[오류] 채용 달력 알림: {exc}")
+                had_errors = True
+                break  # Keep date order for this destination; the rest follows next run.
+            for key in message["keys"]:
+                if recipient not in sent.setdefault(key, []):
+                    sent[key].append(recipient)
+                deadline = by_key[key].deadline
+                deadlines.setdefault(key, {})[recipient] = deadline.isoformat() if deadline else None
+            save_json(CALENDAR_STATE_FILE, state)
+            total += 1
+            time.sleep(3)
+    save_json(CALENDAR_STATE_FILE, state)
+    print(f"✅ 채용 달력 확인 완료 — 전송 {total}개")
+    return 1 if had_errors else 0
+
+
+def preview_calendar(article_id: str, today=None) -> int:
+    today = today or datetime.now(KST).date()
+    item = next((a for a in fetch_cafe_articles(CALENDAR_MENU_ID) if str(a["articleId"]) == article_id), None)
+    if item is None:
+        raise ScheduleError("채용 달력 게시판 목록에서 해당 글을 찾을 수 없습니다")
+    openings = [o for o in collect_openings([item]) if calendar_schedule.is_open(o, today)]
+    messages = calendar_schedule.render_messages(openings, set())
+    for message in messages:
+        print(message["text"])
+        print()
+    print(f"미리보기: 접수 중·예정 {len(openings)}건 / 메시지 {len(messages)}개")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="공기봇 채용 알림")
     parser.add_argument("--preview-article-id", help="발송 및 이력 변경 없이 일정표를 출력합니다")
+    parser.add_argument("--calendar", action="store_true", help="채용 달력의 서류 접수 시작 알림을 보냅니다")
+    parser.add_argument("--preview-calendar-id", help="발송 및 이력 변경 없이 채용 달력 알림을 출력합니다")
     args = parser.parse_args()
+    if args.preview_calendar_id:
+        return preview_calendar(args.preview_calendar_id)
     if args.preview_article_id:
         article = fetch_article(args.preview_article_id)
         jobs = parse_schedule(article.html, article.published, article.url)
@@ -295,6 +394,8 @@ def main():
         return 0
     if not TELEGRAM_TOKEN or not TARGET_CHATS:
         raise ValueError("TELEGRAM_TOKEN과 TELEGRAM_CHAT 설정이 필요합니다")
+    if args.calendar:
+        return monitor_calendar()
     return monitor_boards()
 
 
