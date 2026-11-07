@@ -327,8 +327,7 @@ def monitor_calendar(today=None) -> int:
         deadlines.pop(key, None)
 
     by_key = {item.key: item for item in openings}
-    had_errors = False
-    total = 0
+    plans = []
     for chat in dict.fromkeys(TARGET_CHATS):
         recipient = recipient_key(chat)
         notified = {key: deadlines.get(key, {}).get(recipient) for key, recipients in sent.items()
@@ -338,7 +337,16 @@ def monitor_calendar(today=None) -> int:
                    and item.deadline.isoformat() != notified[item.key]]
         pending = [item for item in openings if item.key not in notified]
         announced = {key.split("|", 1)[0] for key in notified}
-        messages = calendar_schedule.render_messages(pending, announced)
+        plans.append((chat, recipient, changes, pending, announced))
+
+    # Read every new posting before the first message so alerts arrive together.
+    urls = [item.url for _, _, _, pending, _ in plans for item in pending if item.url]
+    details = calendar_schedule.fetch_post_details(urls) if urls else {}
+
+    had_errors = False
+    total = 0
+    for chat, recipient, changes, pending, announced in plans:
+        messages = calendar_schedule.render_messages(pending, announced, details)
         if changes:
             messages.insert(0, calendar_schedule.render_deadline_changes(changes))
         for message in messages:
@@ -355,7 +363,7 @@ def monitor_calendar(today=None) -> int:
                 deadlines.setdefault(key, {})[recipient] = deadline.isoformat() if deadline else None
             save_json(CALENDAR_STATE_FILE, state)
             total += 1
-            time.sleep(3)
+            time.sleep(1)  # Telegram allows about one message per second per chat.
     save_json(CALENDAR_STATE_FILE, state)
     print(f"✅ 채용 달력 확인 완료 — 전송 {total}개")
     return 1 if had_errors else 0
@@ -367,7 +375,8 @@ def preview_calendar(article_id: str, today=None) -> int:
     if item is None:
         raise ScheduleError("채용 달력 게시판 목록에서 해당 글을 찾을 수 없습니다")
     openings = [o for o in collect_openings([item]) if calendar_schedule.is_open(o, today)]
-    messages = calendar_schedule.render_messages(openings, set())
+    details = calendar_schedule.fetch_post_details([o.url for o in openings if o.url])
+    messages = calendar_schedule.render_messages(openings, set(), details)
     for message in messages:
         print(message["text"])
         print()

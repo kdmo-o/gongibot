@@ -153,7 +153,89 @@ def is_open(opening: Opening, today: date) -> bool:
     return opening.deadline >= today
 
 
-def render_messages(openings: list[Opening], announced_dates: set[str]) -> list[dict]:
+EMPLOYMENT_PATTERN = re.compile(
+    r"무기계약직|공무직|정규직|계약직|기간제|(?:채용형|체험형)\s*(?:청년\s*)?인턴|청년\s*인턴|인턴"
+)
+# Parenthesised periods such as "(1분기)" or "(2차)" are not job names.
+PERIOD_PATTERN = re.compile(r"(?:\d+\s*(?:분기|차|회차?|년|월)|상반기|하반기)")
+POSTING_PATTERN = re.compile(r"cafe\.naver\.com/(?:dakchi|ca-fe/cafes/21160703/articles)/(\d+)")
+MAX_DUTIES = 5
+
+
+@dataclass(frozen=True)
+class PostDetails:
+    employment: str | None
+    duties: str | None
+
+
+def parse_post_details(title: str, rows: dict) -> PostDetails:
+    """Employment from the title and the 채용구분 row; duties from the title's parentheses."""
+    kinds = []
+    for match in EMPLOYMENT_PATTERN.finditer(title):
+        kind = re.sub(r"\s+", " ", match.group(0))
+        if kind not in kinds:
+            kinds.append(kind)
+    category = clean(rows.get("채용구분", ""))
+    if category:
+        kinds.append(category)
+    duties = None
+    for group in re.findall(r"\(([^()]*)\)", title):
+        group = clean(group)
+        # Skip deadline notes such as "(~11/16)".
+        if (not group or group.startswith(("~", "～")) or PERIOD_PATTERN.fullmatch(group)
+                or re.fullmatch(r"[\d/.~\s()월화수목금토일]+", group)):
+            continue
+        names = [clean(name) for name in re.split(r"[/,·]", group) if clean(name)]
+        if names:
+            shown = ", ".join(names[:MAX_DUTIES])
+            duties = shown + (f" 외 {len(names) - MAX_DUTIES}개" if len(names) > MAX_DUTIES else "")
+        break
+    return PostDetails(" · ".join(kinds) or None, duties)
+
+
+def posting_url(url: str | None) -> str | None:
+    match = POSTING_PATTERN.search(url or "")
+    return article_url(match.group(1)) if match else None
+
+
+def fetch_post_details(urls: list[str], timeout_ms: int = 20000) -> dict:
+    """Read every posting first with one browser; unreadable postings are simply omitted."""
+    from playwright.sync_api import sync_playwright
+
+    details = {}
+    targets = {url: posting_url(url) for url in dict.fromkeys(urls)}
+    targets = {url: target for url, target in targets.items() if target}
+    if not targets:
+        return details
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page(locale="ko-KR", timezone_id="Asia/Seoul")
+            for url, target in targets.items():
+                try:
+                    page.goto(target, wait_until="domcontentloaded", timeout=timeout_ms)
+                    page.wait_for_selector(".title_text", timeout=timeout_ms)
+                    title = page.locator(".title_text").first.inner_text()
+                    rows = {}
+                    try:
+                        page.wait_for_selector(".se-main-container table", timeout=5000)
+                        table = page.locator(".se-main-container table").first
+                        for row in table.locator("tr").all():
+                            cells = [clean(cell) for cell in row.locator("td").all_inner_texts()]
+                            if len(cells) >= 2 and cells[0]:
+                                rows[cells[0]] = cells[1]
+                    except Exception:
+                        pass  # Postings without the summary table still have a usable title.
+                    details[url] = parse_post_details(clean(title), rows)
+                except Exception:
+                    print("[알림] 공고 글을 읽지 못해 고용·직무 없이 보냅니다")
+        finally:
+            browser.close()
+    return details
+
+
+def render_messages(openings: list[Opening], announced_dates: set[str], details: dict | None = None) -> list[dict]:
+    details = details or {}
     groups = defaultdict(list)
     for opening in openings:
         groups[opening.start].append(opening)
@@ -169,8 +251,14 @@ def render_messages(openings: list[Opening], announced_dates: set[str]) -> list[
             if item.url:
                 name = f'<a href="{escape(item.url, quote=True)}">{name}</a>'
             due = f"~{item.deadline.month}/{item.deadline.day} 마감" if item.deadline else "마감일 미기재"
-            lines.append(f"{name} ({due})")
-        text = f"<b>{title}</b>\n\n" + "\n".join(lines)
+            block = f"{name} ({due})"
+            info = details.get(item.url)
+            if info and info.employment:
+                block += f"\n고용: {escape(info.employment)}"
+            if info and info.duties:
+                block += f"\n직무: {escape(info.duties)}"
+            lines.append(block)
+        text = f"<b>{title}</b>\n\n" + "\n\n".join(lines)
         if telegram_length(text) > MESSAGE_LIMIT:
             raise ScheduleError("서류 접수 시작 알림이 텔레그램 메시지 한도를 초과합니다")
         messages.append({"start": start.isoformat(), "keys": [item.key for item in items], "text": text})

@@ -100,6 +100,7 @@ def calendar_run(monkeypatch, tmp_path):
     pages = {"html": table(["11/09", "11/10"], [[("가공사", 1)], [("나공단", 2)]],
                            [[], [("가공사", 1), ("나공단", 2)]])}
     monkeypatch.setattr(cal, "fetch_calendar_html", lambda _: pages["html"])
+    monkeypatch.setattr(cal, "fetch_post_details", lambda urls: {})
     calls = []
     monkeypatch.setattr(gongibot, "send_message", lambda token, chat, text: calls.append((chat, text)))
     return pages, calls
@@ -118,6 +119,44 @@ def test_only_new_openings_are_sent_once(calendar_run):
     assert len(calls) == 2
     assert all("11/9(월) <a" in text and "시작</a> · 추가</b>" in text and "다재단" in text and "가공사" not in text
                for _, text in calls)
+
+
+@pytest.mark.parametrize("title,rows,employment,duties", [
+    ("★총 59명! [국민건강보험공단 채용] 무기계약직 (사무지원/환경미화/보안지원/시설지원)(~11/16)",
+     {"채용구분": "신입"}, "무기계약직 · 신입", "사무지원, 환경미화, 보안지원, 시설지원"),
+    ("★총 17명! [사회복지공동모금회 채용] 정규직(사업운영,경영지원 등) 채용(~11/22)",
+     {"채용구분": "신입"}, "정규직 · 신입", "사업운영, 경영지원 등"),
+    ("★총 482명! [서울교통공사 채용] 정규직(사무/차량/전기/정보통신/궤도/신호/기계/전자/토목/건축"
+     "/승강장안전문/보건관리/장애/보훈) 채용(~11/09)",
+     {"채용구분": "신입"}, "정규직 · 신입", "사무, 차량, 전기, 정보통신, 궤도 외 9개"),
+    ("[가 채용] 정규직 (가/나/다/라/마)(~11/09)", {}, "정규직", "가, 나, 다, 라, 마"),
+    ("★총 21명! [한국사회보장정보원 채용] 2026년도 제4차 직원 채용(~11/16)",
+     {"채용구분": "신입+경력"}, "신입+경력", None),
+    ("[기관 채용] 직원 채용(~11/16)", {}, None, None),
+    ("★총 39명! [한국관광공사 채용] 2027년 체험형 청년인턴 및 기간제 근로자 채용(1분기)(~11/11)",
+     {"채용구분": "신입"}, "체험형 청년인턴 · 기간제 · 신입", None),
+])
+def test_post_details_from_title_and_table(title, rows, employment, duties):
+    assert cal.parse_post_details(title, rows) == cal.PostDetails(employment, duties)
+
+
+def test_details_are_read_before_first_send(calendar_run, monkeypatch):
+    _, calls = calendar_run
+    order = []
+
+    def fetch(urls):
+        order.append(("fetch", sorted(urls)))
+        return {"https://cafe.naver.com/dakchi/1": cal.PostDetails("정규직 · 신입", "사무, 기술")}
+
+    monkeypatch.setattr(cal, "fetch_post_details", fetch)
+    monkeypatch.setattr(gongibot, "send_message", lambda token, chat, text: order.append(("send", text)))
+    assert gongibot.monitor_calendar(date(2026, 11, 9)) == 0
+    assert order[0] == ("fetch", ["https://cafe.naver.com/dakchi/1"] * 2 + ["https://cafe.naver.com/dakchi/2"] * 2)
+    assert [kind for kind, _ in order] == ["fetch"] + ["send"] * 4
+    first = order[1][1]
+    assert "가공사</a> (~11/10 마감)\n고용: 정규직 · 신입\n직무: 사무, 기술" in first
+    assert "절차" not in first
+    assert "고용" not in order[2][1]  # Missing details leave the lines out.
 
 
 def test_changed_deadline_is_announced_once(calendar_run):
