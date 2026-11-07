@@ -180,11 +180,11 @@ def render_messages(jobs: list[Job], source_url: str, limit: int = MESSAGE_LIMIT
         groups[job.deadline].append(
             f"<b>{name}</b>\n직무: {escape(job.duties)}\n고용: {escape(job.employment)}"
         )
-    # The label itself links to the source article instead of a separate footer.
-    label = f'<a href="{escape(source_url, quote=True)}">마감</a>'
+    # The emoji links to the source article so the title text keeps one colour.
+    icon = f'<a href="{escape(source_url, quote=True)}">⏳</a>'
     messages = []
     for deadline, blocks in sorted(groups.items()):
-        title = f"⏳ {deadline.month}/{deadline.day}({WEEKDAYS[deadline.weekday()]}) {label}"
+        title = f"{icon} {deadline.month}/{deadline.day}({WEEKDAYS[deadline.weekday()]}) 마감"
 
         def message(parts, suffix=""):
             return f"<b>{title}{suffix}</b>\n\n" + "\n\n".join(parts)

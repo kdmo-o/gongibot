@@ -54,7 +54,7 @@ def test_real_calendar_groups_openings_with_deadlines():
     ]
     messages = cal.render_messages(openings, set())
     assert len(messages) == 4
-    assert messages[1]["text"].startswith(f'<b>⏳ 11/3(화) <a href="{NOVEMBER.url}">시작</a></b>\n\n')
+    assert messages[1]["text"].startswith(f'<b><a href="{NOVEMBER.url}">⏳</a> 11/3(화) 시작</b>\n\n')
     assert '<a href="https://cafe.naver.com/dakchi/3199565">서울교통공사</a> (~11/9 마감)' in messages[1]["text"]
     assert "면접" not in messages[1]["text"]
     assert messages[1]["text"].endswith("(~11/11 마감)") and "출처" not in messages[1]["text"]
@@ -117,7 +117,7 @@ def test_only_new_openings_are_sent_once(calendar_run):
                           [[], [("가공사", 1), ("나공단", 2), ("다재단", 3)]])
     assert gongibot.monitor_calendar(date(2026, 11, 9)) == 0
     assert len(calls) == 2
-    assert all("11/9(월) <a" in text and "시작</a> · 추가</b>" in text and "다재단" in text and "가공사" not in text
+    assert all("⏳</a> 11/9(월) 시작 · 추가</b>" in text and "다재단" in text and "가공사" not in text
                for _, text in calls)
 
 
@@ -171,7 +171,7 @@ def test_changed_deadline_is_announced_once(calendar_run):
         ["11/09", "11/10"], [[("가공사", 1)], [("나공단", 2)]], [[], [("나공단", 2)]])
     assert gongibot.monitor_calendar(date(2026, 11, 9)) == 0
     assert len(calls) == 2
-    assert all(text.startswith(f'<b>⏳ <a href="{NOVEMBER.url}">마감일 변경</a></b>') and "가공사</a> (~11/10 → ~11/13)" in text
+    assert all(text.startswith(f'<b><a href="{NOVEMBER.url}">⏳</a> 마감일 변경</b>') and "가공사</a> (~11/10 → ~11/13)" in text
                for _, text in calls)
     calls.clear()
     assert gongibot.monitor_calendar(date(2026, 11, 9)) == 0

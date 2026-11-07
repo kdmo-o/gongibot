@@ -33,7 +33,7 @@ def test_captured_example():
         "⏳ 9/17(목) 마감", "⏳ 9/18(금) 마감",
     ]
     title = BeautifulSoup(messages[0]["text"], "html.parser").find("b")
-    assert title.find("a", string="마감")["href"] == SOURCE
+    assert title.find("a", string="⏳")["href"] == SOURCE
     assert "출처" not in messages[0]["text"] and "건" not in title.get_text()
 
 
@@ -111,7 +111,7 @@ def test_sort_and_split_only_between_employers():
     for message in messages:
         assert telegram_length(message["text"]) <= 4096
         soup = BeautifulSoup(message["text"], "html.parser")
-        companies += [anchor.get_text() for anchor in soup.select("b a") if anchor.get_text() != "마감"]
+        companies += [anchor.get_text() for anchor in soup.select("b a") if anchor.get_text() != "⏳"]
     assert companies == [f"기업{i}" for i in range(8)]
     assert "(1/" in messages[0]["text"]
 

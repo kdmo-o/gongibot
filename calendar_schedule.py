@@ -243,8 +243,8 @@ def render_messages(openings: list[Opening], announced_dates: set[str], details:
     for start, items in sorted(groups.items()):
         added = " · 추가" if start.isoformat() in announced_dates else ""
         source = items[0].source
-        label = f'<a href="{escape(source.url, quote=True)}">시작</a>'
-        title = f"⏳ {start.month}/{start.day}({WEEKDAYS[start.weekday()]}) {label}{added}"
+        icon = f'<a href="{escape(source.url, quote=True)}">⏳</a>'
+        title = f"{icon} {start.month}/{start.day}({WEEKDAYS[start.weekday()]}) 시작{added}"
         lines = []
         for item in items:
             name = escape(item.company)
@@ -274,7 +274,7 @@ def render_deadline_changes(changes: list[tuple[Opening, date]]) -> dict:
         new = item.deadline
         lines.append(f"{name} (~{old.month}/{old.day} → ~{new.month}/{new.day})")
     source = changes[0][0].source
-    text = f'<b>⏳ <a href="{escape(source.url, quote=True)}">마감일 변경</a></b>\n\n' + "\n".join(lines)
+    text = f'<b><a href="{escape(source.url, quote=True)}">⏳</a> 마감일 변경</b>\n\n' + "\n".join(lines)
     if telegram_length(text) > MESSAGE_LIMIT:
         raise ScheduleError("마감일 변경 알림이 텔레그램 메시지 한도를 초과합니다")
     return {"keys": [item.key for item, _ in changes], "text": text}
