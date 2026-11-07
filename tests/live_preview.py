@@ -17,5 +17,5 @@ def test_live_example():
     assert actual == expected
     messages = render_messages(jobs, article.url)
     assert len(messages) == 5
-    assert [message["text"].split("건", 1)[0].rsplit("· ", 1)[-1] for message in messages] == ["4", "5", "4", "7", "2"]
+    assert [message["text"].count("\n직무: ") for message in messages] == [4, 5, 4, 7, 2]
 

@@ -180,13 +180,14 @@ def render_messages(jobs: list[Job], source_url: str, limit: int = MESSAGE_LIMIT
         groups[job.deadline].append(
             f"<b>{name}</b>\n직무: {escape(job.duties)}\n고용: {escape(job.employment)}"
         )
-    footer = f'<a href="{escape(source_url, quote=True)}">출처: 공취모 주간 채용 일정표</a>'
+    # The label itself links to the source article instead of a separate footer.
+    label = f'<a href="{escape(source_url, quote=True)}">마감</a>'
     messages = []
     for deadline, blocks in sorted(groups.items()):
-        title = f"⏳ {deadline.month}/{deadline.day}({WEEKDAYS[deadline.weekday()]}) 마감 · {len(blocks)}건"
+        title = f"⏳ {deadline.month}/{deadline.day}({WEEKDAYS[deadline.weekday()]}) {label}"
 
         def message(parts, suffix=""):
-            return f"<b>{title}{suffix}</b>\n\n" + "\n\n".join(parts) + f"\n\n{footer}"
+            return f"<b>{title}{suffix}</b>\n\n" + "\n\n".join(parts)
 
         if telegram_length(message(blocks)) <= limit:
             chunks = [blocks]

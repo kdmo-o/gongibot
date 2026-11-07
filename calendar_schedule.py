@@ -159,8 +159,10 @@ def render_messages(openings: list[Opening], announced_dates: set[str]) -> list[
         groups[opening.start].append(opening)
     messages = []
     for start, items in sorted(groups.items()):
-        added = "추가 " if start.isoformat() in announced_dates else ""
-        title = f"⏳ {start.month}/{start.day}({WEEKDAYS[start.weekday()]}) 서류 접수 시작 · {added}{len(items)}건"
+        added = " · 추가" if start.isoformat() in announced_dates else ""
+        source = items[0].source
+        label = f'<a href="{escape(source.url, quote=True)}">시작</a>'
+        title = f"⏳ {start.month}/{start.day}({WEEKDAYS[start.weekday()]}) {label}{added}"
         lines = []
         for item in items:
             name = escape(item.company)
@@ -168,9 +170,7 @@ def render_messages(openings: list[Opening], announced_dates: set[str]) -> list[
                 name = f'<a href="{escape(item.url, quote=True)}">{name}</a>'
             due = f"~{item.deadline.month}/{item.deadline.day} 마감" if item.deadline else "마감일 미기재"
             lines.append(f"{name} ({due})")
-        source = items[0].source
-        footer = f'<a href="{escape(source.url, quote=True)}">출처: {escape(source.title)}</a>'
-        text = f"<b>{title}</b>\n\n" + "\n".join(lines) + f"\n\n{footer}"
+        text = f"<b>{title}</b>\n\n" + "\n".join(lines)
         if telegram_length(text) > MESSAGE_LIMIT:
             raise ScheduleError("서류 접수 시작 알림이 텔레그램 메시지 한도를 초과합니다")
         messages.append({"start": start.isoformat(), "keys": [item.key for item in items], "text": text})
@@ -186,8 +186,7 @@ def render_deadline_changes(changes: list[tuple[Opening, date]]) -> dict:
         new = item.deadline
         lines.append(f"{name} (~{old.month}/{old.day} → ~{new.month}/{new.day})")
     source = changes[0][0].source
-    footer = f'<a href="{escape(source.url, quote=True)}">출처: {escape(source.title)}</a>'
-    text = f"<b>⏳ 마감일 변경 · {len(lines)}건</b>\n\n" + "\n".join(lines) + f"\n\n{footer}"
+    text = f'<b>⏳ <a href="{escape(source.url, quote=True)}">마감일 변경</a></b>\n\n' + "\n".join(lines)
     if telegram_length(text) > MESSAGE_LIMIT:
         raise ScheduleError("마감일 변경 알림이 텔레그램 메시지 한도를 초과합니다")
     return {"keys": [item.key for item, _ in changes], "text": text}
